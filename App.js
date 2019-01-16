@@ -1,9 +1,9 @@
 import React from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, TextInput } from 'react-native';
+import { StyleSheet, Text, ScrollView, TouchableOpacity, TextInput, Platform } from 'react-native';
 import RNCallKeep from 'react-native-callkeep';
 import uuid from 'uuid';
 
-import { RTCPeerConnection, RTCSessionDescription, MediaStream, getUserMedia } from 'react-native-webrtc';
+import { RTCPeerConnection, RTCSessionDescription, MediaStream, getUserMedia, RTCView, MediaStreamTrack } from 'react-native-webrtc';
 
 import { WazoApiClient, WazoWebRTCClient } from '@wazo/sdk';
 
@@ -18,8 +18,11 @@ global.navigator.mediaDevices = {
 
 const styles = StyleSheet.create({
   container: {
+    flexGrow: 1,
+    backgroundColor: '#fff'
+  },
+  containerContent: {
     flex: 1,
-    backgroundColor: '#fff',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -28,6 +31,14 @@ const styles = StyleSheet.create({
   },
   button: {
     paddingTop: 50,
+  },
+  localVideo: {
+    width: 200,
+    height: 150,
+  },
+  remoteVideo: {
+    width: 200,
+    height: 150,
   },
 });
 const hitSlop = { top: 10, left: 10, right: 10, bottom: 10};
@@ -46,6 +57,8 @@ export default class App extends React.Component {
       username: '',
       password: '',
       number: '',
+      localVideoSrc: null,
+      remoteVideoSrc: null,
       connected: false,
       ringing: false,
       inCall: false,
@@ -109,15 +122,42 @@ export default class App extends React.Component {
       .catch(console.log);
   };
 
+  getVideoSourceId = () => {
+    if (Platform.OS !== 'ios') {
+      // on android, you don't have to specify sourceId manually, just use facingMode
+      return;
+    }
+
+    MediaStreamTrack.getSources(sourceInfos => {
+      for (const i = 0; i < sourceInfos.length; i++) {
+        const sourceInfo = sourceInfos[i];
+        if(sourceInfo.kind === 'video' && sourceInfo.facing === 'front') {
+          return sourceInfo.id;
+        }
+      }
+    });
+  };
+
   initializeWebRtc = (sipLine, host) => {
+    const videoSourceId = this.getVideoSourceId();
+
     this.webRtcClient = new WazoWebRTCClient({
       host,
-      displayName: 'My dialer',
+      displayName: 'My react-native dialer',
       authorizationUser: sipLine.username,
       password: sipLine.secret,
       uri: sipLine.username + '@' + host,
       media: {
         audio: true,
+        video: {
+          mandatory: {
+            minWidth: 640, // Provide your own width, height and frame rate here
+            minHeight: 360,
+            minFrameRate: 30,
+          },
+          facingMode: 'environment',
+          optional: (videoSourceId ? [ {sourceId: videoSourceId} ] : []),
+        }
       },
     });
 
@@ -125,7 +165,7 @@ export default class App extends React.Component {
       this.setupCallSession(session);
       this.setState({ ringing: true });
 
-      // Tell callkit that we a call is incoming
+      // Tell callkeep that we a call is incoming
       RNCallKeep.displayIncomingCall(this.getCurrentCallId(), this.webRtcClient.getNumber(session));
     });
 
@@ -139,6 +179,23 @@ export default class App extends React.Component {
       this.setState({ error: cause, ringing: false, inCall: false });
     });
 
+    session.on('SessionDescriptionHandler-created', (sdh) => {
+      sdh.on('userMedia', (stream) => {
+        this.setState({ localVideoSrc: stream.toURL() });
+      });
+
+      sdh.on('addStream', (event) => {
+        const { stream } = event;
+        const tracks = stream.getTracks();
+
+        if (tracks.length === 1 && tracks[0].kind === 'video') {
+          this.setState({ remoteVideoSrc: stream.toURL() });
+        } else if(tracks.length === 2) {
+          this.setState({ remoteVideoSrc: stream.toURL() });
+        }
+      });
+    });
+
     session.on('terminated', () => {
       this.hangup();
     });
@@ -150,7 +207,7 @@ export default class App extends React.Component {
 
     this.setState({ inCall: true, ringing: false });
 
-    // Tell callkit that we are in call
+    // Tell callkeep that we are in call
     RNCallKeep.startCall(this.getCurrentCallId(), number);
   };
 
@@ -210,7 +267,7 @@ export default class App extends React.Component {
     const { connected, server } = this.state;
 
     return (
-      <View style={styles.container}>
+      <ScrollView style={styles.container} contentContainerStyle={styles.containerContent} keyboardShouldPersistTaps="handled">
         {!connected && (
           <React.Fragment>
             <TextInput autoCapitalize="none" onChangeText={username => this.setState({ username })} placeholder="Username" value={this.state.username} style={styles.input} />
@@ -225,6 +282,9 @@ export default class App extends React.Component {
 
         {connected && (
           <React.Fragment>
+            <RTCView streamURL={this.state.localVideoSrc} style={styles.localVideo} />
+
+            <RTCView streamURL={this.state.remoteVideoSrc} style={styles.remoteVideo} />
             <TextInput
               autoCapitalize="none"
               keyboardType="numeric"
@@ -252,8 +312,7 @@ export default class App extends React.Component {
             )}
           </React.Fragment>
         )}
-      </View>
+      </ScrollView>
     );
   }
-
 }
